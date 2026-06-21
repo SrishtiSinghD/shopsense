@@ -1,0 +1,10 @@
+{
+  "source": "C:\\Users\\srish\\Downloads\\AmazonHybridRecommender-main\\All_Beauty.jsonl",
+  "review_rows_loaded": 220002,
+  "products": 1500,
+  "users": 664,
+  "interactions": 1542,
+  "max_rows": null,
+  "min_product_reviews": 8,
+  "min_user_reviews": 3
+}

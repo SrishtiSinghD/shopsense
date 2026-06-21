@@ -1,0 +1,11 @@
+services:
+  shopsense:
+    build: .
+    container_name: shopsense-recommender
+    environment:
+      BACKEND_URL: http://127.0.0.1:8000
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+    ports:
+      - "8000:8000"
+      - "8501:8501"
