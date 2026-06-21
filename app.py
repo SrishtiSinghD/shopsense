@@ -10,7 +10,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-from gemini_agent import gemini_status, process_query
+from gemini_agent import process_query
 from recommender import artifact_summary, catalog, demo_users
 
 
@@ -607,11 +607,6 @@ with st.sidebar:
     selected_user_label, selected_user = persona_choices[persona_idx]
 
     top_n = st.slider("Recommendations", 3, 8, 5)
-
-    with st.expander("🔧 Debug: Gemini status", expanded=False):
-        status = gemini_status()
-        st.write(status)
-        st.caption(f"BACKEND_URL = {BACKEND_URL}")
 
     st.divider()
     st.subheader("Try These")
