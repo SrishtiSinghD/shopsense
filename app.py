@@ -396,16 +396,7 @@ def api_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_product(product, rank: int | None = None, delay: float = 0.0) -> None:
-    """Render one product as a single HTML block.
-
-    Everything (image, title, rating, description, CTA) is built into one
-    string and passed to a single st.markdown call. Streamlit gives every
-    st.image / st.write / st.link_button its own top-level DOM node, so
-    mixing those widgets between an opening and closing '<div>' markdown
-    call never actually nests them inside that div — that's why the cards
-    were rendering as empty purple boxes with the real content stacked
-    underneath, outside the border. One markdown call = one real container.
-    """
+    """Render one product as a single HTML block."""
     name = html.escape(str(product.get("name") or "Unnamed product"))
     description = html.escape(str(product.get("description") or "")[:150])
     rating = html.escape(str(product.get("avg_rating", "—")))
@@ -438,22 +429,6 @@ def render_product(product, rank: int | None = None, delay: float = 0.0) -> None
 
     badge_html = '<div class="card-badge">✨ Top match</div>' if rank == 0 else ""
 
-    # NOTE: built as one continuous string with zero embedded newlines.
-    # When badge_html was "" earlier, the multi-line template below it left
-    # a whitespace-only line, which Markdown treats as a blank line. That
-    # ended the raw-HTML block early, and the indented lines after it got
-    # reinterpreted as an indented *code block* -- which is exactly the
-    # literal "<div class=...>" text showing up on every card except the
-    # one where the badge line wasn't blank. No newlines = no blank lines
-    # = Markdown can't second-guess it.
-    #
-    # The badge also now lives inside .card-media (absolutely positioned
-    # over the image) rather than inline at the top of .card-body. With it
-    # inline, the one card that had a badge pushed its title down further
-    # than every other card in the row, so titles in the badge-less columns
-    # crowded up toward the row above -- that's the "overlapping" look.
-    # Putting it in the image area means .card-body always starts in the
-    # same place, badge or not.
     card_html = (
         f'<div class="product-card" style="--d:{delay:.2f}s">'
         f'<div class="card-media">{media_html}{badge_html}</div>'
@@ -483,12 +458,6 @@ _LEAK_PATTERNS = [
 
 
 def _scrub(text: str) -> str:
-    """Safety net for any backend-written copy shown to the user.
-
-    Shoppers shouldn't see implementation details — which dataset this
-    came from, model/agent names, etc. This strips that vocabulary out of
-    whatever text the backend hands back, regardless of how it's phrased.
-    """
     cleaned = text
     for pattern in _LEAK_PATTERNS:
         cleaned = pattern.sub("", cleaned)
@@ -497,17 +466,6 @@ def _scrub(text: str) -> str:
 
 
 def build_display_message(query: str, response: dict[str, Any]) -> str:
-    """Turn a backend response into clean, user-facing chat copy.
-
-    For guardrail refusals and sentiment reads, the backend's message is
-    written for the end user already, so it just gets a light scrub. For
-    normal recommendations, we don't trust the model's freeform sentence
-    at all — it tends to narrate its own internals (data source, category
-    tags) and re-list products the cards below already show. Instead we
-    write one short sentence ourselves from the structured `results`,
-    so the user-facing copy is fully controlled regardless of what the
-    agent returns.
-    """
     guardrail = response.get("guardrail") or {}
     if guardrail.get("allowed") is False:
         return _scrub(guardrail.get("message") or "I can't help with that request.")
@@ -519,6 +477,10 @@ def build_display_message(query: str, response: dict[str, Any]) -> str:
 
     results = response.get("results") or []
     if results:
+        assistant_text = response.get("assistant_message")
+        if assistant_text and response.get("reply_router") != "local_fallback":
+            return _scrub(assistant_text)
+
         count = len(results)
         plural = "s" if count != 1 else ""
         return (
@@ -536,17 +498,12 @@ def build_display_message(query: str, response: dict[str, Any]) -> str:
 def handle_query(
     query: str, user_id: str, top_n: int, display_query: str | None = None
 ) -> dict[str, Any]:
-    """Run a query against the backend.
-
-    `query` is what's actually sent to process_query — keep this as the
-    real ASIN/text the backend expects to match on. `display_query` is
-    what shows up in the chat thread; pass it in whenever the literal
-    query text is something a shopper shouldn't see verbatim (like a
-    raw ASIN) and you want a friendlier line shown instead.
-    """
     shown_query = display_query or query
     with st.spinner("🤖 ShopSense is thinking..."):
-        response = process_query(query, user_id=user_id, top_n=top_n)
+        response = api_post(
+            "/agent/query",
+            {"query": query, "user_id": user_id, "top_n": top_n},
+        )
     st.session_state.messages.append({"role": "user", "content": shown_query})
     st.session_state.messages.append(
         {
@@ -565,8 +522,6 @@ def render_assistant_turn(message: dict[str, Any]) -> None:
     guardrail = (response or {}).get("guardrail") or {}
 
     if guardrail.get("allowed") is False:
-        # Show the sanitized copy once, styled as a refusal — not the raw
-        # backend text, and not twice (markdown + error box).
         st.error(message["content"])
         return
 
@@ -597,13 +552,6 @@ products = catalog()
 
 
 def _lookup_product_name(asin: str) -> str | None:
-    """Best-effort ASIN -> product name lookup against the loaded catalog.
-
-    Used so a demo button can show a real product name instead of a raw
-    ASIN to the shopper, while the backend still gets the exact ASIN it
-    expects for "find similar" matching. Falls back to None on any shape
-    mismatch so a catalog format change can't crash the sidebar.
-    """
     try:
         rows = products.to_dict("records") if hasattr(products, "to_dict") else products
         for row in rows:
@@ -640,13 +588,30 @@ if "scroll_pending" not in st.session_state:
 
 with st.sidebar:
     st.header("Demo Controls")
-    user_options = {u["name"]: u["user_id"] for u in users}
-    user_options["New visitor (cold start)"] = "guest"
-    selected_user_label = st.selectbox(
-        "Persona", list(user_options.keys()), key="persona_select"
+
+    # Build persona options as a plain list of (label, user_id) tuples and
+    # select by INDEX rather than by label string. Streamlit's selectbox
+    # persists state keyed to the widget's serialized value between runs;
+    # selecting by index + format_func avoids the deserialize path that
+    # was throwing "list indices must be integers or slices, not str"
+    # when the underlying options identity changed between reruns.
+    persona_choices: list[tuple[str, str]] = [(u["name"], u["user_id"]) for u in users]
+    persona_choices.append(("New visitor (cold start)", "guest"))
+
+    persona_idx = st.selectbox(
+        "Persona",
+        options=list(range(len(persona_choices))),
+        format_func=lambda i: persona_choices[i][0],
+        index=0,
     )
-    selected_user = user_options[selected_user_label]
+    selected_user_label, selected_user = persona_choices[persona_idx]
+
     top_n = st.slider("Recommendations", 3, 8, 5)
+
+    with st.expander("🔧 Debug: Gemini status", expanded=False):
+        status = gemini_status()
+        st.write(status)
+        st.caption(f"BACKEND_URL = {BACKEND_URL}")
 
     st.divider()
     st.subheader("Try These")
